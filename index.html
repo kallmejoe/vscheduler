@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Schedule Conflict Checker</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <h1>Schedule Conflict Checker</h1>
+      <p id="fileStatus" class="muted">Loading schedule…</p>
+    </header>
+
+    <section class="card" id="scheduleCard">
+      <div class="row space-between">
+        <h2>Your Schedule</h2>
+        <button id="clearBtn" class="ghost">Clear all</button>
+      </div>
+      <div id="conflictsSummary"></div>
+      <ol id="conflictsList" class="conflicts-list"></ol>
+      <div id="scheduleGridWrap"></div>
+      <details id="scheduleListDetails">
+        <summary>Selected sessions</summary>
+        <ul id="scheduleList" class="schedule-list"></ul>
+      </details>
+    </section>
+
+    <div id="appBody" hidden>
+      <section class="card" id="levelCard">
+        <h2>1. Choose your level &amp; section</h2>
+        <div class="row">
+          <label>
+            Level
+            <select id="levelSelect"></select>
+          </label>
+          <label>
+            Section
+            <select id="sectionSelect"></select>
+          </label>
+        </div>
+        <div id="floatingContainer" class="stack"></div>
+      </section>
+
+      <section class="card" id="electiveCard" hidden>
+        <h2>2. Add elective courses <span class="muted">(optional)</span></h2>
+        <input id="electiveFilter" type="text" placeholder="Filter by course code or title…" />
+        <div id="electiveContainer" class="stack"></div>
+      </section>
+    </div>
+
+    <details id="fileLoader" class="card">
+      <summary>Load a different schedule file</summary>
+      <p class="muted">
+        By default this loads <code id="defaultFileName"></code> from this same folder.
+        Pick a different .xlsm/.xlsx here if needed — nothing is ever uploaded anywhere,
+        everything runs in your browser.
+      </p>
+      <input id="fileInput" type="file" accept=".xlsx,.xlsm" />
+    </details>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="parser.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
