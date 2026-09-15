@@ -1,8 +1,16 @@
+import { Parser } from './parser.js';
+
 /**
  * app.js
  *
  * DOM wiring for the Schedule Conflict Checker. All Excel-reading logic
  * lives in parser.js; this file owns application state and rendering.
+ *
+ * Sessions that span more than one period (a merged cell in the source
+ * sheet) are represented as a single item with a `periods` array (e.g.
+ * [3, 4]) rather than two separate items - see parser.js's
+ * mergeConsecutivePeriods. Everything here treats `periods` as the unit of
+ * selection/conflict-checking, not a single period number.
  */
 
 (function () {
@@ -33,13 +41,26 @@
     });
   }
 
+  function periodRangeLabel(periods) {
+    return periods.length > 1 ? ('P' + periods[0] + '\u2013P' + periods[periods.length - 1]) : ('P' + periods[0]);
+  }
+
+  function timeRangeLabel(periods) {
+    var start = gridPeriodTimes[periods[0]];
+    var end = gridPeriodTimes[periods[periods.length - 1]];
+    if (!start) return '';
+    if (periods.length === 1 || !end) return start;
+    var startPart = String(start).split('-')[0].trim();
+    var endPart = String(end).split('-').slice(-1)[0].trim();
+    return startPart + ' - ' + endPart;
+  }
+
   function makeItem(session, groupKey, sourceLabel) {
     return {
       groupKey: groupKey,
-      itemKey: groupKey + '::' + session.day + '::' + session.period + '::' + session.raw,
+      itemKey: groupKey + '::' + session.day + '::' + session.periods.join(',') + '::' + session.raw,
       day: session.day,
-      period: session.period,
-      time: session.time,
+      periods: session.periods.slice(),
       code: session.code,
       title: session.title,
       type: session.type,
@@ -57,9 +78,10 @@
     return parts.length ? ' (' + parts.join(' \u00b7 ') + ')' : '';
   }
 
-  function wouldConflict(day, period, excludeGroupKey) {
+  function wouldConflict(day, periods, excludeGroupKey) {
     return mySchedule.some(function (x) {
-      return x.groupKey !== excludeGroupKey && x.day === day && x.period === period;
+      if (x.groupKey === excludeGroupKey || x.day !== day) return false;
+      return x.periods.some(function (p) { return periods.indexOf(p) !== -1; });
     });
   }
 
@@ -112,7 +134,9 @@
       }
       all.forEach(function (s) {
         if (s.day) daysSet[s.day] = true;
-        if (s.period != null && s.time != null && periodTimes[s.period] == null) periodTimes[s.period] = s.time;
+        s.periods.forEach(function (p, i) {
+          if (periodTimes[p] == null && s.times[i] != null) periodTimes[p] = s.times[i];
+        });
       });
     });
     allDays = Parser.DAY_ORDER.filter(function (d) { return daysSet[d]; });
@@ -190,11 +214,11 @@
   }
 
   function makeOptionButton(item, groupKey, selected) {
-    var conflicting = wouldConflict(item.day, item.period, groupKey);
+    var conflicting = wouldConflict(item.day, item.periods, groupKey);
     var btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'option-btn' + (selected ? ' selected' : '') + (conflicting ? ' warn' : '');
-    btn.textContent = item.day + ' P' + item.period + ' (' + item.time + ')';
+    btn.textContent = item.day + ' ' + periodRangeLabel(item.periods) + ' (' + timeRangeLabel(item.periods) + ')';
     btn.addEventListener('click', function () {
       setGroupSelection(groupKey, selected ? [] : [item]);
     });
@@ -307,20 +331,22 @@
       return;
     }
 
-    var conflictKeys = {};
-    Parser.findConflicts(mySchedule).forEach(function (c) { conflictKeys[c.day + '|' + c.period] = true; });
+    var conflictingKeys = {};
+    Parser.findConflicts(mySchedule).forEach(function (c) {
+      c.items.forEach(function (it) { conflictingKeys[it.itemKey] = true; });
+    });
 
     var sorted = mySchedule.slice().sort(function (a, b) {
-      return Parser.dayIndex(a.day) - Parser.dayIndex(b.day) || a.period - b.period;
+      return Parser.dayIndex(a.day) - Parser.dayIndex(b.day) || a.periods[0] - b.periods[0];
     });
 
     sorted.forEach(function (item) {
       var li = document.createElement('li');
-      if (conflictKeys[item.day + '|' + item.period]) li.className = 'conflict';
+      if (conflictingKeys[item.itemKey]) li.className = 'conflict';
 
       var left = document.createElement('span');
       left.innerHTML = '<strong>' + escapeHtml(item.code) + '</strong> ' + escapeHtml(item.type) + escapeHtml(roomText(item)) +
-        ' <span class="meta">\u00b7 ' + escapeHtml(item.day) + ' P' + item.period + ' (' + escapeHtml(String(item.time)) +
+        ' <span class="meta">\u00b7 ' + escapeHtml(item.day) + ' ' + periodRangeLabel(item.periods) + ' (' + escapeHtml(timeRangeLabel(item.periods)) +
         ') \u00b7 ' + escapeHtml(item.sourceLabel) + '</span>';
       li.appendChild(left);
 
@@ -356,10 +382,15 @@
     thead.appendChild(headRow);
     table.appendChild(thead);
 
+    // A multi-period item occupies every period it spans - place it in each
+    // of those grid rows so it's visible wherever it blocks time, but it's
+    // still the same single session (see the "Selected sessions" list).
     var byDayPeriod = {};
     mySchedule.forEach(function (item) {
-      var key = item.day + '|' + item.period;
-      (byDayPeriod[key] = byDayPeriod[key] || []).push(item);
+      item.periods.forEach(function (p) {
+        var key = item.day + '|' + p;
+        (byDayPeriod[key] = byDayPeriod[key] || []).push(item);
+      });
     });
 
     var tbody = document.createElement('tbody');
@@ -406,7 +437,7 @@
     conflicts.forEach(function (c) {
       var li = document.createElement('li');
       var names = c.items.map(function (it) { return it.code + ' ' + it.type + ' (' + it.sourceLabel + ')'; });
-      li.innerHTML = '<strong>' + escapeHtml(c.day) + ' P' + c.period + '</strong> (' + escapeHtml(String(c.time)) +
+      li.innerHTML = '<strong>' + escapeHtml(c.day) + ' ' + periodRangeLabel(c.periods) + '</strong> (' + escapeHtml(timeRangeLabel(c.periods)) +
         ') \u2014 <span class="vs">' + names.map(escapeHtml).join(' \u2715 ') + '</span>';
 
       uniqueGroupKeys(c.items).forEach(function (gk) {

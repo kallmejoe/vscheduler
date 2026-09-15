@@ -18,7 +18,8 @@
  *   - Merged cells are used both for sessions spanning multiple periods
  *     (vertical merges) and sessions shared by multiple sections
  *     (horizontal merges). We expand every merge into a full grid before
- *     reading, so both cases "just work" without special-casing.
+ *     reading, while retaining each cell's merge origin so only a real
+ *     vertical merge becomes one multi-period session.
  *   - Some sheets (e.g. "Elective courses") lay out several such tables
  *     side by side instead of a single one with numbered sections. In that
  *     case column numbers don't identify a personal "section" - each cell is
@@ -85,18 +86,26 @@ var Parser = (function () {
       return copy;
     });
 
+    // Kept alongside the values rather than replacing them: parsers still
+    // consume a normal 2D matrix, but can identify repeated values that came
+    // from one actual vertically merged Excel cell.
+    var mergeOrigins = {};
     var merges = ws['!merges'] || [];
     for (var mi = 0; mi < merges.length; mi++) {
       var m = merges[mi];
       var topRow = matrix[m.s.r];
       var value = topRow ? topRow[m.s.c] : null;
+      var mergeId = m.s.r + ':' + m.s.c + '-' + m.e.r + ':' + m.e.c;
+      var spansPeriods = m.e.r > m.s.r;
       for (var r = m.s.r; r <= m.e.r; r++) {
         if (!matrix[r]) matrix[r] = new Array(width).fill(null);
         for (var c = m.s.c; c <= m.e.c; c++) {
           matrix[r][c] = value;
+          mergeOrigins[r + '|' + c] = { id: mergeId, spansPeriods: spansPeriods };
         }
       }
     }
+    Object.defineProperty(matrix, 'mergeOrigins', { value: mergeOrigins });
     return matrix;
   }
 
@@ -195,10 +204,9 @@ var Parser = (function () {
   }
 
   // A lecture/lab/tutorial that occupies more than one period is stored as a
-  // merged cell spanning several rows. After merge-expansion that shows up
-  // as several consecutive per-period rows with identical text - group them
-  // back into a single logical session with a `periods` array instead of
-  // treating it as several unrelated bookings.
+  // merged cell spanning several rows. After merge-expansion, combine only
+  // rows that originated from that same vertical merge. Identical text in two
+  // unmerged adjacent periods must remain two separate sessions.
   function mergeConsecutivePeriods(sessions) {
     var sorted = sessions.slice().sort(function (a, b) {
       return dayIndex(a.day) - dayIndex(b.day) || a.period - b.period;
@@ -207,9 +215,9 @@ var Parser = (function () {
     sorted.forEach(function (s) {
       var last = out[out.length - 1];
       var contiguous = last &&
+        s.mergeOrigin && s.mergeOrigin.spansPeriods &&
+        last.mergeOrigin && last.mergeOrigin.id === s.mergeOrigin.id &&
         last.day === s.day &&
-        last.raw === s.raw &&
-        (last.table || null) === (s.table || null) &&
         s.period === last.periods[last.periods.length - 1] + 1;
       if (contiguous) {
         last.periods.push(s.period);
@@ -224,6 +232,7 @@ var Parser = (function () {
     out.forEach(function (o) {
       o.period = o.periods[0];
       o.time = o.times[0];
+      delete o.mergeOrigin;
     });
     return out;
   }
@@ -259,7 +268,8 @@ var Parser = (function () {
               day: days[r],
               period: matrix[r][h.col + 1],
               time: matrix[r][h.col + 2],
-              table: tableLabel
+              table: tableLabel,
+              mergeOrigin: matrix.mergeOrigins[r + '|' + c]
             }, parsed));
           }
         }
@@ -285,7 +295,8 @@ var Parser = (function () {
         sections[sc0.number].push(Object.assign({
           day: days0[r0],
           period: matrix[r0][h0.col + 1],
-          time: matrix[r0][h0.col + 2]
+          time: matrix[r0][h0.col + 2],
+          mergeOrigin: matrix.mergeOrigins[r0 + '|' + sc0.col]
         }, parsed0));
       }
     }
@@ -304,7 +315,8 @@ var Parser = (function () {
         items.push(Object.assign({
           day: days0[r1],
           period: matrix[r1][h0.col + 1],
-          time: matrix[r1][h0.col + 2]
+          time: matrix[r1][h0.col + 2],
+          mergeOrigin: matrix.mergeOrigins[r1 + '|' + c1]
         }, parsed1));
       }
       if (items.length > 0) {
@@ -354,10 +366,25 @@ var Parser = (function () {
       .map(function (key) {
         var parts = key.split('|');
         return { day: parts[0], period: Number(parts[1]), items: bySlot[key] };
-      })ime: items[0].time, items: items });
+      })
+      .filter(function (s) { return s.items.length > 1; })
+      .sort(function (a, b) { return dayIndex(a.day) - dayIndex(b.day) || a.period - b.period; });
+
+    var conflicts = [];
+    slots.forEach(function (slot) {
+      var idKey = slot.items.map(function (it) { return it.itemKey; }).sort().join(',');
+      var last = conflicts[conflicts.length - 1];
+      var contiguous = last &&
+        last.day === slot.day &&
+        last._idKey === idKey &&
+        slot.period === last.periods[last.periods.length - 1] + 1;
+      if (contiguous) {
+        last.periods.push(slot.period);
+      } else {
+        conflicts.push({ day: slot.day, periods: [slot.period], items: slot.items, _idKey: idKey });
       }
     });
-    conflicts.sort(function (a, b) { return dayIndex(a.day) - dayIndex(b.day) || a.period - b.period; });
+    conflicts.forEach(function (c) { delete c._idKey; });
     return conflicts;
   }
 
@@ -373,3 +400,5 @@ var Parser = (function () {
     dayIndex: dayIndex
   };
 })();
+
+export { Parser };
